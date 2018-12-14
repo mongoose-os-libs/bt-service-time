@@ -23,39 +23,11 @@
 #include "mgos_event.h"
 #include "mgos_sys_config.h"
 
-#include "esp32_bt.h"
-#include "esp32_bt_gatts.h"
+#include "mgos_bt_gatts.h"
 
 /* Note: partial implementation, no notifications or time reference info. */
 
-static const uint16_t time_svc_uuid = ESP_GATT_UUID_CURRENT_TIME_SVC;
-static const uint16_t current_time_uuid = ESP_GATT_UUID_CURRENT_TIME;
-static uint16_t current_time_ah;
-
-const esp_gatts_attr_db_t time_svc_gatt_db[3] = {
-    {
-     .attr_control = {.auto_rsp = ESP_GATT_AUTO_RSP},
-     .att_desc =
-         {
-          .uuid_length = ESP_UUID_LEN_16,
-          .uuid_p = (uint8_t *) &primary_service_uuid,
-          .perm = ESP_GATT_PERM_READ,
-          .max_length = ESP_UUID_LEN_128,
-          .length = ESP_UUID_LEN_16,
-          .value = (uint8_t *) &time_svc_uuid,
-         },
-    },
-    /* current_time */
-    {{ESP_GATT_AUTO_RSP},
-     {ESP_UUID_LEN_16, (uint8_t *) &char_decl_uuid, ESP_GATT_PERM_READ, 1, 1,
-      (uint8_t *) &char_prop_read}},
-    {{ESP_GATT_RSP_BY_APP},
-     {ESP_UUID_LEN_16, (uint8_t *) &current_time_uuid, ESP_GATT_PERM_READ, 0, 0,
-      NULL}},
-};
-
-/* https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.current_time.xml
- */
+// https://www.bluetooth.com/specifications/gatt/viewer?attributeXmlFile=org.bluetooth.characteristic.current_time.xml
 struct bt_date_time {
   uint16_t year;
   uint8_t mon;
@@ -80,27 +52,25 @@ struct bt_cur_time_resp {
   uint8_t adj_reason;
 } __attribute__((packed));
 
-static bool time_svc_ev(struct esp32_bt_session *bs, esp_gatts_cb_event_t ev,
-                        esp_ble_gatts_cb_param_t *ep) {
-  bool ret = false;
+static enum mgos_bt_gatt_status mgos_bt_time_svc_ev(
+    struct mgos_bt_gatts_conn *c, enum mgos_bt_gatts_ev ev, void *ev_arg,
+    void *handler_arg) {
   switch (ev) {
-    case ESP_GATTS_CREAT_ATTR_TAB_EVT: {
-      const struct gatts_add_attr_tab_evt_param *p = &ep->add_attr_tab;
-      current_time_ah = p->handles[2];
-      break;
-    }
-    case ESP_GATTS_READ_EVT: {
-      struct bt_cur_time_resp resp;
-      const struct gatts_read_evt_param *p = &ep->read;
-      if (p->handle != current_time_ah || p->offset != 0) {
-        break;
+    case MGOS_BT_GATTS_EV_CONNECT:
+      return MGOS_BT_GATT_STATUS_OK;
+    case MGOS_BT_GATTS_EV_READ: {
+      struct mgos_bt_gatts_read_arg *ra =
+          (struct mgos_bt_gatts_read_arg *) ev_arg;
+      if (ra->offset != 0) {
+        return MGOS_BT_GATT_STATUS_INVALID_OFFSET;
       }
+      struct bt_cur_time_resp resp;
       memset(&resp, 0, sizeof(resp));
       const double now = cs_time();
       const time_t time = (time_t) now;
       struct tm tm;
       if (gmtime_r(&time, &tm) == NULL) {
-        break;
+        return MGOS_BT_GATT_STATUS_UNLIKELY_ERROR;
       }
       resp.exact_time_256.day_date_time.date_time.year = tm.tm_year + 1900;
       resp.exact_time_256.day_date_time.date_time.mon = tm.tm_mon + 1;
@@ -112,25 +82,29 @@ static bool time_svc_ev(struct esp32_bt_session *bs, esp_gatts_cb_event_t ev,
           (tm.tm_wday == 0 ? 7 : tm.tm_wday);
       resp.exact_time_256.s256 = (uint8_t)((now - time) / (1.0 / 256));
       resp.adj_reason = 0;
-      esp_gatt_rsp_t rsp = {.attr_value = {.handle = p->handle,
-                                           .offset = p->offset,
-                                           .len = sizeof(resp)}};
-      memcpy(rsp.attr_value.value, &resp, sizeof(resp));
-      esp_ble_gatts_send_response(bs->bc->gatt_if, bs->bc->conn_id, p->trans_id,
-                                  ESP_GATT_OK, &rsp);
-      ret = true;
-      break;
+      mgos_bt_gatts_send_resp_data(c, ra,
+                                   mg_mk_str_n((char *) &resp, sizeof(resp)));
+      return MGOS_BT_GATT_STATUS_OK;
     }
+    case MGOS_BT_GATTS_EV_CLOSE:
+      return MGOS_BT_GATT_STATUS_OK;
     default:
       break;
   }
-  return ret;
+  return MGOS_BT_GATT_STATUS_REQUEST_NOT_SUPPORTED;
 }
 
+static const struct mgos_bt_gatts_char_def s_time_svc_def[] = {
+    {
+     .uuid = "2a2b", /* current time */
+     .prop = MGOS_BT_GATTS_PROP_RWNI(1, 0, 0, 0),
+    },
+    {.uuid = NULL},
+};
+
 bool mgos_bt_service_time_init(void) {
-  if (mgos_sys_config_get_bt_time_svc_enable()) {
-    mgos_bt_gatts_register_service(time_svc_gatt_db,
-                                   ARRAY_SIZE(time_svc_gatt_db), time_svc_ev);
-  }
+  if (!mgos_sys_config_get_bt_time_svc_enable()) return true;
+  mgos_bt_gatts_register_service("1805", MGOS_BT_GATT_SEC_LEVEL_NONE,
+                                 s_time_svc_def, mgos_bt_time_svc_ev, NULL);
   return true;
 }
