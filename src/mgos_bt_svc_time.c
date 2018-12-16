@@ -86,7 +86,7 @@ static enum mgos_bt_gatt_status mgos_bt_time_svc_ev(
                                    mg_mk_str_n((char *) &resp, sizeof(resp)));
       return MGOS_BT_GATT_STATUS_OK;
     }
-    case MGOS_BT_GATTS_EV_CLOSE:
+    case MGOS_BT_GATTS_EV_DISCONNECT:
       return MGOS_BT_GATT_STATUS_OK;
     default:
       break;
@@ -97,7 +97,7 @@ static enum mgos_bt_gatt_status mgos_bt_time_svc_ev(
 static const struct mgos_bt_gatts_char_def s_time_svc_def[] = {
     {
      .uuid = "2a2b", /* current time */
-     .prop = MGOS_BT_GATTS_PROP_RWNI(1, 0, 0, 0),
+     .prop = MGOS_BT_GATT_PROP_RWNI(1, 0, 0, 0),
     },
     {.uuid = NULL},
 };
